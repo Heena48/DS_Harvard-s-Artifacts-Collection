@@ -227,7 +227,7 @@ with tab3:
         query4_colors = f"""
         SELECT * FROM artifact_colors
         WHERE objectid = '{artifact_id}'
-        ORDER BY coverage DESC;
+        ORDER BY hue DESC;
         """
         df4_colors = run_query(query4_colors)
         if not df4_colors.empty:
@@ -366,17 +366,23 @@ with tab5:
     # Dropdown for classification
     classification = st.selectbox(
         "Select Artifact Classification",
-        ["Coins", "Paintings", "Scriptures", "Jewellery", "Drawings"]
+        ['Prints','Paintings','Fragments','Sculpture','Archival Material']
     )
 
-    # Simulated data fetch (replace with real API logic)
-    def fetch_classification_data(classification):
-        return pd.DataFrame({
-            "title": [f"{classification} Artifact {i}" for i in range(1, 2501)],
-            "classification": [classification]*2500,
-            "culture": ["Byzantine"]*2500,
-            "period": ["16th Century"]*2500
-        })
+    def fetch_classification_data(classification: str, limit: int = 2500) -> pd.DataFrame:
+        query = """
+            SELECT title, classification, culture, period
+            FROM artifact_metadata
+            WHERE classification = ?
+            LIMIT ?
+        """
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                df = pd.read_sql_query(query, conn, params=(classification, limit))
+            return df
+        except sqlite3.Error as e:
+            print(f"Database error: {e}")
+            return pd.DataFrame()
 
     # Session state to persist data
     if "fetched_df" not in st.session_state:
@@ -398,14 +404,22 @@ with tab5:
                 st.warning("No data collected yet.")
 
     with col3:
-        if st.button("Insert into SQL"):
+        if st.button("Insert into SQL", disabled=st.session_state.get("insert_in_progress", False)):
             if not st.session_state.fetched_df.empty:
+                st.session_state.insert_in_progress = True  # Lock insert trigger
                 try:
-                    with sqlite3.connect(DB_PATH) as conn:
-                        st.session_state.fetched_df.to_sql("artifact_classification", conn, if_exists="append", index=False)
+                    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                        conn.execute("PRAGMA journal_mode=WAL;") 
+                        st.session_state.fetched_df.to_sql(
+                            "artifact_classification", conn, if_exists="replace", index=False
+                        )
                     st.success("Data inserted into SQL successfully.")
+                except sqlite3.OperationalError as e:
+                    st.error(f"Insertion failed: Database is locked or busy. Try again shortly.")
                 except Exception as e:
                     st.error(f"Insertion failed: {e}")
+                finally:
+                    st.session_state.insert_in_progress = False  # Release lock
             else:
                 st.warning("No data to insert.")
 
